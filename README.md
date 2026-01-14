@@ -7,7 +7,7 @@
 - Auto-play: when a song ends, the next one starts automatically
 - Everything saved in `~/.shellbeats/` so your playlists persist between sessions
 - All UI now in English (finally cleaned up those Italian strings)
-- 100% translated in english no more half italian words.
+- Project started in Italian for personal use, now it's 100% translated in english no more half italian words.
 
 # shellbeats
 
