@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <dirent.h>
+#include "youtube_playlist.h"
 
 #define MAX_RESULTS 50
 #define MAX_PLAYLISTS 50
@@ -35,18 +36,14 @@
 // Data Structures
 // ============================================================================
 
-typedef struct {
-    char *title;
-    char *video_id;
-    char *url;
-    int duration;
-} Song;
+// Song struct is defined in youtube_playlist.h
 
 typedef struct {
     char *name;
     char *filename;
     Song items[MAX_PLAYLIST_ITEMS];
     int count;
+    bool is_youtube_playlist;
 } Playlist;
 
 // NEW: Configuration structure
@@ -981,7 +978,8 @@ static void save_playlist(AppState *st, int idx) {
     FILE *f = fopen(path, "w");
     if (!f) return;
     
-    fprintf(f, "{\n  \"name\": \"%s\",\n  \"songs\": [\n", pl->name);
+    fprintf(f, "{\n  \"name\": \"%s\",\n  \"type\": \"%s\",\n  \"songs\": [\n",
+            pl->name, pl->is_youtube_playlist ? "youtube" : "local");
     
     for (int i = 0; i < pl->count; i++) {
         char *escaped_title = json_escape_string(pl->items[i].title);
@@ -1031,6 +1029,11 @@ static void load_playlist_songs(AppState *st, int idx) {
     size_t read_size = fread(content, 1, fsize, f);
     content[read_size] = '\0';
     fclose(f);
+    
+    // Parse type
+    char *type = json_get_string(content, "type");
+    pl->is_youtube_playlist = (type && strcmp(type, "youtube") == 0);
+    free(type);
     
     // Parse songs array - simple approach
     const char *p = strstr(content, "\"songs\"");
@@ -1159,7 +1162,7 @@ static void load_playlists(AppState *st) {
     free(content);
 }
 
-static int create_playlist(AppState *st, const char *name) {
+static int create_playlist(AppState *st, const char *name, bool is_youtube) {
     if (st->playlist_count >= MAX_PLAYLISTS) return -1;
     if (!name || !name[0]) return -1;
     
@@ -1194,6 +1197,7 @@ static int create_playlist(AppState *st, const char *name) {
     st->playlists[idx].name = strdup(name);
     st->playlists[idx].filename = filename;
     st->playlists[idx].count = 0;
+    st->playlists[idx].is_youtube_playlist = is_youtube;
     st->playlist_count++;
     
     save_playlists_index(st);
@@ -1610,15 +1614,20 @@ static void play_playlist_song(AppState *st, int playlist_idx, int song_idx) {
 
     mpv_start_if_needed();
 
-    // Check if local file exists for this song
-    char local_path[2048];
-    if (get_local_file_path_for_song(st, pl->name, pl->items[song_idx].video_id,
-                                      local_path, sizeof(local_path))) {
-        // Play from local file
-        mpv_load_url(local_path);
-    } else {
-        // Stream from YouTube
+    // Check if YouTube playlist - always stream
+    if (pl->is_youtube_playlist) {
         mpv_load_url(pl->items[song_idx].url);
+    } else {
+        // Check if local file exists for this song
+        char local_path[2048];
+        if (get_local_file_path_for_song(st, pl->name, pl->items[song_idx].video_id,
+                                          local_path, sizeof(local_path))) {
+            // Play from local file
+            mpv_load_url(local_path);
+        } else {
+            // Stream from YouTube
+            mpv_load_url(pl->items[song_idx].url);
+        }
     }
 
     st->playing_index = song_idx;
@@ -1694,12 +1703,12 @@ static void draw_header(int cols, ViewMode view) {
             mvprintw(2, 0, "  a: add to playlist | d: download | c: create playlist | f: playlists | S: settings | i: about | q: quit");
             break;
         case VIEW_PLAYLISTS:
-            mvprintw(1, 0, "  Enter: open | d: download all | c: create | x: delete");
+            mvprintw(1, 0, "  Enter: open | d: download all | c: create | p: add YouTube | x: delete");
             mvprintw(2, 0, "  Esc: back | i: about | q: quit");
             break;
         case VIEW_PLAYLIST_SONGS:
             mvprintw(1, 0, "  Enter: play | Space: pause | n: next | p: prev | x: stop");
-            mvprintw(2, 0, "  a: add song | d: download | r: remove | Esc: back | i: about | q: quit");
+            mvprintw(2, 0, "  a: add song | d: download | r: remove | D: download all (YT) | Esc: back | i: about | q: quit");
             break;
         case VIEW_ADD_TO_PLAYLIST:
             mvprintw(1, 0, "  Enter: add to playlist | c: create new playlist");
@@ -1943,6 +1952,7 @@ static void draw_playlist_songs_view(AppState *st, const char *status, int rows,
     mvprintw(4, 0, "Playlist: ");
     attron(A_BOLD);
     printw("%s", pl->name);
+    if (pl->is_youtube_playlist) printw(" [YT]");
     attroff(A_BOLD);
 
     mvprintw(4, cols - 20, "Songs: %d", pl->count);
@@ -2771,7 +2781,7 @@ int main(void) {
                         char name[128] = {0};
                         int len = get_string_input(name, sizeof(name), "New playlist name: ");
                         if (len > 0) {
-                            int idx = create_playlist(&st, name);
+                            int idx = create_playlist(&st, name, false);
                             if (idx >= 0) {
                                 snprintf(status, sizeof(status), "Created playlist: %s", name);
                             } else if (idx == -2) {
@@ -2854,7 +2864,7 @@ int main(void) {
                         char name[128] = {0};
                         int len = get_string_input(name, sizeof(name), "New playlist name: ");
                         if (len > 0) {
-                            int idx = create_playlist(&st, name);
+                            int idx = create_playlist(&st, name, false);
                             if (idx >= 0) {
                                 snprintf(status, sizeof(status), "Created playlist: %s", name);
                                 st.playlist_selected = idx;
@@ -2890,6 +2900,71 @@ int main(void) {
                             }
                         }
                         break;
+                    
+                    // NEW: Add YouTube playlist
+                    case 'p': {
+                        char url[512] = {0};
+                        int len = get_string_input(url, sizeof(url), "YouTube playlist URL: ");
+                        if (len > 0) {
+                            if (!validate_youtube_playlist_url(url)) {
+                                snprintf(status, sizeof(status), "Invalid URL");
+                                break;
+                            }
+
+                            char fetched_title[256] = {0};
+                            Song temp_songs[MAX_PLAYLIST_ITEMS];
+                            int fetched = fetch_youtube_playlist(url, temp_songs, MAX_PLAYLIST_ITEMS, 
+                                                                 fetched_title, sizeof(fetched_title));
+                            if (fetched <= 0) {
+                                snprintf(status, sizeof(status), "Failed to fetch playlist");
+                                break;
+                            }
+
+                            char playlist_name[256];
+                            int name_len = get_string_input(playlist_name, sizeof(playlist_name), "Playlist name: ");
+                            if (name_len == 0) {
+                                strncpy(playlist_name, fetched_title, sizeof(playlist_name) - 1);
+                                playlist_name[sizeof(playlist_name) - 1] = '\0';
+                            }
+
+                            char mode[8] = {0};
+                            while (1) {
+                                get_string_input(mode, sizeof(mode), "Mode (s)tream or (d)ownload: ");
+                                if (mode[0] == 's' || mode[0] == 'S' || mode[0] == 'd' || mode[0] == 'D') break;
+                                snprintf(status, sizeof(status), "Invalid mode. Choose 's' or 'd'");
+                                draw_ui(&st, status);
+                            }
+                            bool stream_only = (mode[0] == 's' || mode[0] == 'S');
+
+                            int idx = create_playlist(&st, playlist_name, true);
+                            if (idx < 0) {
+                                snprintf(status, sizeof(status), "Failed to create playlist");
+                                for (int i = 0; i < fetched; i++) {
+                                    free(temp_songs[i].title);
+                                    free(temp_songs[i].video_id);
+                                    free(temp_songs[i].url);
+                                }
+                                break;
+                            }
+
+                            Playlist *pl = &st.playlists[idx];
+                            for (int i = 0; i < fetched; i++) {
+                                pl->items[i] = temp_songs[i];
+                                pl->count++;
+                            }
+                            save_playlist(&st, idx);
+
+                            if (!stream_only) {
+                                for (int i = 0; i < pl->count; i++) {
+                                    add_to_download_queue(&st, pl->items[i].video_id, pl->items[i].title, pl->name);
+                                }
+                            }
+                            status[0] = '\0';
+                        } else {
+                            snprintf(status, sizeof(status), "Cancelled");
+                        }
+                        break;
+                    }
                     
                     // NEW: Download entire playlist
                     case 'd':
@@ -3006,6 +3081,22 @@ int main(void) {
                         }
                         break;
                     
+                    case 'D':
+                        if (pl && pl->is_youtube_playlist && pl->count > 0) {
+                            int added = 0;
+                            for (int i = 0; i < pl->count; i++) {
+                                int result = add_to_download_queue(&st, pl->items[i].video_id, 
+                                                                   pl->items[i].title, pl->name);
+                                if (result > 0) added++;
+                            }
+                            if (added > 0) {
+                                snprintf(status, sizeof(status), "Queued %d songs", added);
+                            } else {
+                                snprintf(status, sizeof(status), "All songs already queued or downloaded");
+                            }
+                        }
+                        break;
+                    
                     case 'x':
                         if (st.playing_index >= 0) {
                             mpv_stop_playback();
@@ -3051,7 +3142,7 @@ int main(void) {
                         char name[128] = {0};
                         int len = get_string_input(name, sizeof(name), "New playlist name: ");
                         if (len > 0) {
-                            int idx = create_playlist(&st, name);
+                            int idx = create_playlist(&st, name, false);
                             if (idx >= 0) {
                                 if (st.song_to_add) {
                                     add_song_to_playlist(&st, idx, st.song_to_add);
