@@ -4,17 +4,17 @@ CFLAGS = -Wall -Wextra -O2 -pthread
 LDFLAGS = -lncurses -pthread
 
 TARGET = shellbeats
-SRC = shellbeats.c
+SRC = shellbeats.c youtube_playlist.c
 
 .PHONY: all clean install uninstall
 
 all: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 debug: $(SRC)
-	$(CC) $(CFLAGS) -g -DDEBUG -o $(TARGET) $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -g -DDEBUG -o $(TARGET) $^ $(LDFLAGS)
 
 clean:
 	rm -f $(TARGET)
